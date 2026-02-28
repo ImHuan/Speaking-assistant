@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>RAG Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Markdown renderer -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <style>
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+
+<body class="h-screen bg-gradient-to-br from-[#0f172a] via-[#0b1120] to-[#020617] text-white flex">
+
+    <!-- Sidebar -->
+    <div class="w-64 bg-[#0b1120] border-r border-slate-800 p-4 flex flex-col">
+        <h1 class="text-xl font-bold mb-6 text-blue-400">RAG Assistant</h1>
+
+        <button id="new-chat-btn"
+            class="bg-blue-600 hover:bg-blue-700 p-2 rounded-lg mb-4 transition">
+            + New Chat
+        </button>
+
+        <div id="chat-list" class="flex-1 overflow-y-auto"></div>
+
+        <div class="text-sm text-slate-400 mt-4">
+            Built with FastAPI + LLM
+        </div>
+    </div>
+
+    <!-- Main Chat Area -->
+    <div class="flex-1 flex flex-col">
+
+        <!-- Chat Messages -->
+        <div id="chat-box" class="flex-1 overflow-y-auto p-8 space-y-6"></div>
+
+        <!-- Input Area -->
+        <div class="p-5 bg-[#0b1120] border-t border-slate-800">
+            <form id="chat-form" class="flex gap-3">
+                <input 
+                    id="question-input"
+                    type="text"
+                    placeholder="Type your question..."
+                    class="flex-1 p-4 rounded-xl bg-slate-800 text-white outline-none focus:ring-2 focus:ring-blue-500 transition"
+                />
+                <button 
+                    type="submit"
+                    class="bg-blue-600 hover:bg-blue-700 px-6 rounded-xl transition"
+                >
+                    Send
+                </button>
+            </form>
+        </div>
+
+    </div>
+
+<script>
+const form = document.getElementById("chat-form");
+const input = document.getElementById("question-input");
+const chatBox = document.getElementById("chat-box");
+const newChatBtn = document.getElementById("new-chat-btn");
+const chatList = document.getElementById("chat-list");
+
+let sessions = JSON.parse(localStorage.getItem("sessions")) || [];
+let currentSessionId = localStorage.getItem("currentSessionId");
+
+// ================= INIT =================
+
+if (!currentSessionId) {
+    createNewChat();
+} else {
+    loadChat(currentSessionId);
+}
+
+renderSidebar();
+
+// ================= CREATE NEW CHAT =================
+
+function createNewChat() {
+
+    if (sessions.length >= 10) {
+        alert("Maximum 10 chats allowed");
+        return;
+    }
+
+    currentSessionId = crypto.randomUUID();
+    localStorage.setItem("currentSessionId", currentSessionId);
+
+    sessions.push(currentSessionId);
+    localStorage.setItem("sessions", JSON.stringify(sessions));
+
+    renderSidebar();
+    resetChatUI();
+}
+
+newChatBtn.addEventListener("click", createNewChat);
+
+// ================= RESET UI =================
+
+function resetChatUI() {
+    chatBox.innerHTML = `
+        <div class="flex">
+            <div class="bg-slate-800 p-5 rounded-2xl max-w-2xl prose prose-invert">
+                Hello 👋 Ask me anything about IELTS!
+            </div>
+        </div>
+    `;
+}
+
+// ================= LOAD CHAT =================
+
+async function loadChat(sessionId) {
+    currentSessionId = sessionId;
+    localStorage.setItem("currentSessionId", currentSessionId);
+
+    resetChatUI();
+
+    try {
+        const res = await fetch(`/history/${sessionId}`);
+        const data = await res.json();
+
+        if (!data.history || data.history.length === 0) {
+            return;
+        }
+
+        data.history.forEach(([q, a]) => {
+            appendUserMessage(q);
+            appendBotMessage(a);
+        });
+
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+    } catch (err) {
+        console.error("Failed to load history");
+    }
+}
+
+// ================= RENDER SIDEBAR =================
+
+function renderSidebar() {
+    chatList.innerHTML = "";
+
+    sessions.forEach((sessionId, index) => {
+
+        const container = document.createElement("div");
+        container.className = "flex items-center justify-between mb-2";
+
+        const btn = document.createElement("button");
+        btn.textContent = "Chat " + (index + 1);
+        btn.className = "bg-slate-800 hover:bg-slate-700 p-2 rounded text-left text-sm flex-1 mr-2";
+        btn.onclick = () => loadChat(sessionId);
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.textContent = "✕";
+        deleteBtn.className = "text-red-400 hover:text-red-600 text-sm";
+        deleteBtn.onclick = () => deleteChat(sessionId);
+
+        container.appendChild(btn);
+        container.appendChild(deleteBtn);
+
+        chatList.appendChild(container);
+    });
+}
+
+async function deleteChat(sessionId) {
+
+    const confirmDelete = confirm("Delete this chat?");
+    if (!confirmDelete) return;
+
+    try {
+        await fetch(`/session/${sessionId}`, {
+            method: "DELETE"
+        });
+    } catch (err) {
+        console.error("Backend delete failed");
+    }
+
+    // Xoá khỏi localStorage
+    sessions = sessions.filter(id => id !== sessionId);
+    localStorage.setItem("sessions", JSON.stringify(sessions));
+
+    // Nếu đang mở chat đó
+    if (currentSessionId === sessionId) {
+
+        if (sessions.length > 0) {
+            loadChat(sessions[0]);
+        } else {
+            createNewChat();
+        }
+    }
+
+    renderSidebar();
+}
+
+// ================= SEND MESSAGE =================
+
+form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const question = input.value.trim();
+    if (!question) return;
+
+    appendUserMessage(question);
+    input.value = "";
+
+    const loadingId = "loading-" + Date.now();
+    chatBox.innerHTML += `
+        <div id="${loadingId}" class="flex">
+            <div class="bg-slate-800 p-5 rounded-2xl max-w-2xl animate-pulse">
+                Thinking...
+            </div>
+        </div>
+    `;
+
+    chatBox.scrollTop = chatBox.scrollHeight;
+
+    try {
+        const response = await fetch("/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                question,
+                session_id: currentSessionId
+            })
+        });
+
+        const data = await response.json();
+
+        document.getElementById(loadingId).remove();
+        appendBotMessage(data.answer);
+
+    } catch (err) {
+        document.getElementById(loadingId).remove();
+        appendBotMessage("Error: Failed to connect to server.");
+    }
+
+    chatBox.scrollTop = chatBox.scrollHeight;
+});
+
+// ================= MESSAGE HELPERS =================
+
+function appendUserMessage(text) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "flex justify-end";
+
+    const bubble = document.createElement("div");
+    bubble.className =
+        "bg-blue-600 p-4 rounded-2xl max-w-xl w-fit break-words";
+
+    bubble.textContent = text;
+
+    wrapper.appendChild(bubble);
+    chatBox.appendChild(wrapper);
+}
+
+function appendBotMessage(markdownText) {
+    chatBox.innerHTML += `
+        <div class="flex">
+            <div class="bg-slate-800 p-5 rounded-2xl max-w-2xl prose prose-invert">
+                ${marked.parse(markdownText)}
+            </div>
+        </div>
+    `;
+}
+</script>
+
+</body>
+</html>
